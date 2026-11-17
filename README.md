@@ -1,5 +1,9 @@
 # OneClient Mobile
 
+## AI Disclosure
+AI was heavily used to develop this app, feel free to pr any fixes / code cleanup
+#
+
 A mobile companion app for OneClient. It brings the social features from
 [OneLauncher](https://github.com/Polyfrost/OneLauncher) and
 [PolyPlus](https://github.com/Polyfrost/PolyPlus) to iOS and Android:
