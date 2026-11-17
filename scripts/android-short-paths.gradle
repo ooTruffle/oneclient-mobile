@@ -1,0 +1,22 @@
+// Gradle init script used by build-android-local.ps1 (Windows only).
+//
+// The app's native build compiles sources from node_modules, and CMake names
+// each object file after the source's full path, e.g.
+//   ...\android\app\.cxx\RelWithDebInfo\<hash>\arm64-v8a\<lib>_autolinked_build\
+//   CMakeFiles\<target>.dir\C_\Users\...\node_modules\...\File.cpp.o
+// which passes Windows' 260-character limit and ninja fails. Two fixes:
+//   1. CMAKE_OBJECT_PATH_MAX makes CMake swap the long middle for a short hash.
+//      It must exceed the object folder's own length (~170 chars here) or
+//      CMake gives up shortening, and stay under 260 (MAX_PATH incl. the NUL).
+//   2. The .cxx folder moves to a short path outside the project.
+// Kept out of android/ so `expo prebuild --clean` can't undo it.
+
+// As short as possible: every character here is one less for the file names.
+def stagingRoot = System.getenv('OCM_CXX_DIR') ?: "${System.getenv('USERPROFILE')}/.ocx"
+
+allprojects { project ->
+  project.plugins.withId('com.android.application') {
+    project.android.externalNativeBuild.cmake.buildStagingDirectory = new File(stagingRoot)
+    project.android.defaultConfig.externalNativeBuild.cmake.arguments('-DCMAKE_OBJECT_PATH_MAX=258')
+  }
+}
