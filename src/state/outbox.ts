@@ -7,6 +7,7 @@ import * as Crypto from 'expo-crypto';
 import { useCallback, useSyncExternalStore } from 'react';
 import { plus } from '@/api/plus';
 import { session } from '@/auth/session';
+import { chatIdentity } from './chatIdentity';
 import type { GroupMessage } from '@/api/types';
 import { errorMessage } from '@/lib/http';
 
@@ -16,6 +17,8 @@ export interface Outgoing {
   groupId: number;
   /** Who sent it. A message is only ever posted as this account. */
   accountId: string;
+  /** The delegated owner it's sent as ("Chat as"), or null for yourself. Kept for retries. */
+  actAs: string | null;
   /** Idempotency key, reused on retry so the server can't post it twice. */
   key: string;
   content: string;
@@ -50,7 +53,7 @@ async function deliver(item: Outgoing) {
   update(item.key, { status: 'sending' });
   let result: DeliveryResult;
   try {
-    const message = await plus.sendMessage(item.groupId, item.content, item.key);
+    const message = await plus.sendMessage(item.groupId, item.content, item.key, item.actAs);
     // Drop it only if it's still queued (the socket echo may have confirmed it already).
     if (items.some((x) => x.key === item.key)) set(items.filter((x) => x.key !== item.key));
     result = { groupId: item.groupId, key: item.key, message };
@@ -75,6 +78,7 @@ export const outbox = {
       id: --nextId,
       groupId,
       accountId,
+      actAs: chatIdentity.actAs,
       key: Crypto.randomUUID(),
       content,
       sent_at: new Date().toISOString(),

@@ -25,9 +25,10 @@ export default function GroupInfoScreen() {
 
   if (!group) return <EmptyState icon="help-circle-outline" title="Conversation not found" />;
 
-  const me = account.id.toLowerCase();
-  // The server refuses rename/leave/member changes on Special Chat.
-  const editable = group.kind === 'group' && !group.special;
+  const me = social.selfId.toLowerCase();
+  // The server refuses rename/leave/member changes on Special Chat, and for
+  // anyone chatting as someone else ("Chat as" only covers messages).
+  const editable = group.kind === 'group' && !group.special && !social.actAs;
   const members = new Set(group.members.map((m) => m.toLowerCase()));
   const invitable = social.friends.filter((f) => !members.has(f.player.toLowerCase()));
 
@@ -74,7 +75,7 @@ export default function GroupInfoScreen() {
     <ScrollView style={{ backgroundColor: c.surface }} contentContainerStyle={{ paddingBottom: spacing.xl * 2 }}>
       {error && <ErrorBanner message={error} />}
 
-      {group.special && (
+      {group.special && !social.actAs && (
         <Text style={{ color: c.onSurfaceVariant, ...type.bodyMedium, padding: spacing.lg, paddingBottom: 0 }}>
           Special Chat goes straight to Polyfrost. You can send one message every 3 days, and its members can't be
           changed.
@@ -104,7 +105,7 @@ export default function GroupInfoScreen() {
           <Row
             key={m}
             left={<Avatar uuid={m} size={40} online={isMe ? social.connected : social.isOnline(m)} />}
-            title={isMe ? `${account.username} (you)` : name(m)}
+            title={isMe ? `${social.actAs ? name(m) : account.username} (you)` : name(m)}
             right={
               !isMe && editable ? (
                 <IconButton

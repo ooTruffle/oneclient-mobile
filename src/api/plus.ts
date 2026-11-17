@@ -4,6 +4,7 @@
 
 import * as Crypto from 'expo-crypto';
 import { session } from '@/auth/session';
+import { ACT_AS_HEADER, chatIdentity } from '@/state/chatIdentity';
 import { CURSOR_PAGE_SIZE, MAX_RESOLVE_BATCH, PLUS_API_URL } from '@/config';
 import { AccountChangedError, fetchWithTimeout, HttpError, readJson, withQuery } from '@/lib/http';
 import type {
@@ -28,9 +29,22 @@ import type {
 type Method = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 type Query = Record<string, string | number | undefined | null>;
 
-async function request<T>(method: Method, path: string, opts: { body?: unknown; query?: Query } = {}): Promise<T> {
+interface RequestOptions {
+  body?: unknown;
+  query?: Query;
+  /**
+   * Chat routes only (PolyPlus `applyActAs`): the delegated owner to act as,
+   * or null for yourself. Other routes reject the header.
+   */
+  actAs?: string | null;
+  /** Drop the answer if the chat identity changed while this was in flight (reads only). */
+  identityBound?: boolean;
+}
+
+async function request<T>(method: Method, path: string, opts: RequestOptions = {}): Promise<T> {
   const url = withQuery(`${PLUS_API_URL}${path}`, opts.query ?? {});
   const owner = session.current?.id;
+  const identity = chatIdentity.actAs;
   let stale: string | undefined;
 
   // One retry with a fresh Polyfrost token if the cached one was rejected.
@@ -43,6 +57,7 @@ async function request<T>(method: Method, path: string, opts: { body?: unknown; 
       headers: {
         Accept: 'application/json',
         Authorization: `Bearer ${token}`,
+        ...(opts.actAs ? { [ACT_AS_HEADER]: opts.actAs } : {}),
         ...(opts.body !== undefined ? { 'Content-Type': 'application/json' } : {}),
       },
       body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
@@ -54,6 +69,7 @@ async function request<T>(method: Method, path: string, opts: { body?: unknown; 
     const result = await readJson<T>(res);
     // The user switched accounts while this was in flight; its answer belongs to the other account.
     if (session.current?.id !== owner) throw new AccountChangedError();
+    if (opts.identityBound && chatIdentity.actAs !== identity) throw new AccountChangedError();
     return result;
   }
 }
@@ -71,6 +87,11 @@ async function allPages<T>(path: string, max = 1000): Promise<T[]> {
 }
 
 const seg = encodeURIComponent;
+
+/** Chat reads made as whoever is selected in "Chat as"; dropped if that changes mid-flight. */
+const asCurrent = (opts: RequestOptions = {}): RequestOptions => ({ ...opts, actAs: chatIdentity.actAs, identityBound: true });
+/** Chat writes made as whoever is selected in "Chat as". */
+const asSelected = (opts: RequestOptions = {}): RequestOptions => ({ ...opts, actAs: chatIdentity.actAs });
 
 export const plus = {
   // Friends
@@ -90,7 +111,9 @@ export const plus = {
 
   // Conversations (DMs, groups, party chats)
   groupsPage: (cursor?: string, limit = 50) =>
-    request<CursorPage<GroupSummary>>('GET', '/v1/groups', { query: { limit, cursor } }),
+    request<CursorPage<GroupSummary>>('GET', '/v1/groups', asCurrent({ query: { limit, cursor } })),
+  /** Players whose chats you can act as (Special Chat targets you answer for, etc.). */
+  delegations: () => request<string[]>('GET', '/groups/delegations'),
   openDirectMessage: (player: string) => request<GroupSummary>('POST', `/groups/dm/${seg(player)}`),
   createGroup: (name: string, members: string[]) =>
     request<GroupSummary>('POST', '/groups', { body: { name, members } }),
@@ -101,20 +124,29 @@ export const plus = {
   removeMember: (groupId: number, player: string) =>
     request<void>('DELETE', `/groups/${groupId}/members/${seg(player)}`),
   messages: (groupId: number, before?: number, limit = 50) =>
-    request<GroupMessage[]>('GET', `/groups/${groupId}/messages`, { query: { before, limit } }),
-  /** Reuse `idempotencyKey` when retrying, so a send that did reach the server isn't posted twice. */
-  sendMessage: (groupId: number, content: string, idempotencyKey: string = Crypto.randomUUID()) =>
+    request<GroupMessage[]>('GET', `/groups/${groupId}/messages`, asCurrent({ query: { before, limit } })),
+  /**
+   * Reuse `idempotencyKey` when retrying, so a send that did reach the server isn't posted twice.
+   * `actAs` is fixed when the message is queued, so a retry goes out as the same identity.
+   */
+  sendMessage: (
+    groupId: number,
+    content: string,
+    idempotencyKey: string = Crypto.randomUUID(),
+    actAs: string | null = chatIdentity.actAs,
+  ) =>
     request<GroupMessage>('POST', `/groups/${groupId}/messages`, {
       body: { content, idempotency_key: idempotencyKey },
+      actAs,
     }),
   editMessage: (groupId: number, messageId: number, content: string) =>
-    request<GroupMessage>('PATCH', `/groups/${groupId}/messages/${messageId}`, { body: { content } }),
+    request<GroupMessage>('PATCH', `/groups/${groupId}/messages/${messageId}`, asSelected({ body: { content } })),
   deleteMessage: (groupId: number, messageId: number) =>
-    request<void>('DELETE', `/groups/${groupId}/messages/${messageId}`),
+    request<void>('DELETE', `/groups/${groupId}/messages/${messageId}`, asSelected()),
   markRead: (groupId: number, messageId: number) =>
-    request<void>('POST', `/groups/${groupId}/read/${messageId}`),
+    request<void>('POST', `/groups/${groupId}/read/${messageId}`, asSelected()),
   /** Special Chat cooldown. The cooldown is per player, shared by every Special Chat group. */
-  specialChat: () => request<SpecialChatStatus>('GET', '/special-chat'),
+  specialChat: () => request<SpecialChatStatus>('GET', '/special-chat', asCurrent()),
 
   // Party (PolyPlus `PartyApi`, OneLauncher `party.rs`). GET returns 204 when not in a party.
   party: async () => (await request<Party | undefined>('GET', '/v1/party')) ?? null,

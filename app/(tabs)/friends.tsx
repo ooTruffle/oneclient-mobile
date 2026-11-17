@@ -83,8 +83,11 @@ export default function FriendsScreen() {
   // A ref, not state: two taps in the same frame must both see the first one.
   const openingDm = useRef(false);
   const openDm = (player: string) => {
+    // Friends are yours, so their DMs are too: stop chatting as someone else first.
+    const asSelf = !social.actAs;
+    if (!asSelf) social.chatAs(null);
     // Reuse the DM we already know about instead of asking the server again.
-    const existing = social.groups.find(
+    const existing = asSelf && social.groups.find(
       (g) => g.kind === 'dm' && g.members.some((m) => m.toLowerCase() === player.toLowerCase()),
     );
     if (existing) {

@@ -14,7 +14,6 @@ import { describeLocation, dmPartner, groupTitle, timeLeft } from '@/lib/format'
 import { alert } from '@/lib/dialog';
 import { renderEmoji } from '@/lib/emoji';
 import { errorMessage } from '@/lib/http';
-import { useAccount } from '@/state/auth';
 import { outbox, useOutbox } from '@/state/outbox';
 import { requestNames, usePlayerNames } from '@/state/players';
 import { usePackets, useSocial } from '@/state/social';
@@ -51,8 +50,9 @@ export default function ChatScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const groupId = Number(id);
   const router = useRouter();
-  const account = useAccount();
   const social = useSocial();
+  // Yourself, or the player you're chatting as ("Chat as").
+  const me = social.selfId;
   const name = usePlayerNames();
   const headerHeight = useHeaderHeight();
   const insets = useSafeAreaInsets();
@@ -71,13 +71,17 @@ export default function ChatScreen() {
 
   // Special Chat: one message per 72 hours, shared across every Special Chat group.
   const special = group?.special === true;
+  // Chatting as a Special Chat target (staff answering): no cooldown applies.
+  const [answering, setAnswering] = useState(false);
+  const limited = special && !answering;
   const [cooldownUntil, setCooldownUntil] = useState<number | null>(null);
   const [now, setNow] = useState(() => Date.now());
-  const locked = special && cooldownUntil !== null && cooldownUntil > now;
+  const locked = limited && cooldownUntil !== null && cooldownUntil > now;
 
   const refreshCooldown = useCallback(async () => {
     try {
       const status = await plus.specialChat();
+      setAnswering(status.is_special_chat_target);
       const until = status.cooldown_until ? Date.parse(status.cooldown_until) : NaN;
       setCooldownUntil(Number.isNaN(until) ? null : until);
       setNow(Date.now());
@@ -251,7 +255,7 @@ export default function ChatScreen() {
 
   /** Lock Special Chat straight away; the server's answer corrects it either way. */
   const lockSpecial = () => {
-    if (!special) return;
+    if (!limited) return;
     setCooldownUntil(Date.now() + SPECIAL_COOLDOWN_MS);
     setNow(Date.now());
   };
@@ -270,7 +274,7 @@ export default function ChatScreen() {
       return;
     }
     // Throwing keeps the draft in the composer.
-    if (special && !(await confirmSpecialSend())) throw new Error('cancelled');
+    if (limited && !(await confirmSpecialSend())) throw new Error('cancelled');
     lockSpecial();
     outbox.send(groupId, text);
   };
@@ -294,14 +298,14 @@ export default function ChatScreen() {
 
   // Unconfirmed messages sit at the bottom, newest first like the rest of the inverted list.
   const shown: ChatMessage[] = [
-    ...[...pending].reverse().map((x) => ({ id: x.id, sender: account.id, content: x.content, sent_at: x.sent_at, status: x.status })),
+    ...[...pending].reverse().map((x) => ({ id: x.id, sender: me, content: x.content, sent_at: x.sent_at, status: x.status })),
     ...messages,
   ];
 
   const onLongPress = (message: ChatMessage) => {
     if (message.status === 'failed') return onPressMessage(message);
     if (message.status) return;
-    const mine = message.sender.toLowerCase() === account.id.toLowerCase();
+    const mine = message.sender.toLowerCase() === me.toLowerCase();
     const isInvite = message.inviteStatus != null;
     const actions: AlertButton[] = [];
     // Android 13+ confirms the copy itself with a system popup.
@@ -327,8 +331,8 @@ export default function ChatScreen() {
     alert(preview || 'Message', undefined, [...actions, { text: 'Cancel', style: 'cancel' }]);
   };
 
-  const partner = group ? dmPartner(group, account.id) : undefined;
-  const title = group ? groupTitle(group, account.id, name) : 'Conversation';
+  const partner = group ? dmPartner(group, me) : undefined;
+  const title = group ? groupTitle(group, me, name) : 'Conversation';
   const shared = group ? group.kind !== 'dm' : true;
 
   return (
@@ -371,7 +375,7 @@ export default function ChatScreen() {
       {error && <ErrorBanner message={error} onRetry={() => void load()} />}
       <MessageList
         messages={shown}
-        me={account.id}
+        me={me}
         name={name}
         showSenders={shared}
         onPress={onPressMessage}
@@ -390,7 +394,7 @@ export default function ChatScreen() {
         </View>
       ) : (
         <>
-          {special && !editing && (
+          {limited && !editing && (
             <View style={styles.hint}>
               <Ionicons name="information-circle-outline" size={16} color={c.onSurfaceVariant} />
               <Text style={styles.hintText}>One message every 3 days. Put everything in a single message.</Text>

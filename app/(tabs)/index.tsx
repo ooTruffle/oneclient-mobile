@@ -40,6 +40,8 @@ export default function ChatsScreen() {
   const account = useAccount();
   const social = useSocial();
   const name = usePlayerNames();
+  // Yourself, or the player you're chatting as ("Chat as").
+  const me = social.selfId;
   const pins = usePins(account.id);
   const [bySection] = usePref(PREFS.chatSections, true);
   const [collapsed, setCollapsed] = usePref<SectionKey[]>(PREFS.collapsedSections, NONE_COLLAPSED);
@@ -47,9 +49,11 @@ export default function ChatsScreen() {
   const preview = (g: GroupSummary) => {
     const last = g.last_message;
     if (!last) return 'No messages yet';
-    const who = last.sender.toLowerCase() === account.id.toLowerCase() ? 'You' : name(last.sender);
+    const who = last.sender.toLowerCase() === me.toLowerCase() ? 'You' : name(last.sender);
     const body = last.content ? renderEmoji(last.content) : 'World invite';
     // Special Chat members are just you and staff, so a last message from you means it's their turn.
+    // (Answering as staff it's the other way round; the server says which.)
+    if (g.special && social.actAs) return g.awaiting_reply ? `Awaiting your reply · ${body}` : `${who}: ${body}`;
     if (g.special && who === 'You') return `Waiting for a reply · ${body}`;
     return g.kind === 'dm' && who !== 'You' ? body : `${who}: ${body}`;
   };
@@ -76,7 +80,7 @@ export default function ChatsScreen() {
 
   const actions = (g: GroupSummary) => {
     const pinned = pins.isPinned(g.id);
-    alert(groupTitle(g, account.id, name), undefined, [
+    alert(groupTitle(g, me, name), undefined, [
       { text: pinned ? 'Unpin' : 'Pin to top', onPress: () => pins.toggle(g.id) },
       { text: 'Cancel', style: 'cancel' },
     ]);
@@ -85,6 +89,7 @@ export default function ChatsScreen() {
   return (
     <View style={{ flex: 1 }}>
       {social.error && <ErrorBanner message={social.error} onRetry={social.refreshGroups} />}
+      {social.delegations.length > 0 && <ChatAsPicker />}
       <SectionList
         sections={sections}
         keyExtractor={(g) => String(g.id)}
@@ -123,7 +128,7 @@ export default function ChatsScreen() {
           )
         }
         renderItem={({ item }) => {
-          const partner = dmPartner(item, account.id);
+          const partner = dmPartner(item, me);
           const pinned = pins.pinned.has(item.id);
           return (
             <Row
@@ -134,7 +139,7 @@ export default function ChatsScreen() {
                   <GroupAvatar size={48} icon={item.special ? 'star' : item.kind === 'party' ? 'game-controller' : 'people'} />
                 )
               }
-              title={groupTitle(item, account.id, name)}
+              title={groupTitle(item, me, name)}
               badge={item.special ? 'Special' : undefined}
               subtitle={preview(item)}
               bold={item.unread}
@@ -158,15 +163,56 @@ export default function ChatsScreen() {
           );
         }}
       />
-      <Pressable
+      {/* New groups are always yours, so only offer it while chatting as yourself. */}
+      {!social.actAs && <Pressable
         accessibilityLabel="New group"
         onPress={() => router.push('/new-group')}
         android_ripple={ripple(c.onPrimaryContainer)}
         style={({ pressed }) => [styles.fab, pressed && Platform.OS !== 'android' && { opacity: 0.9 }]}
       >
         <Ionicons name="create-outline" size={24} color={c.onPrimaryContainer} />
-      </Pressable>
+      </Pressable>}
     </View>
+  );
+}
+
+/**
+ * PolyPlus's "Chat as" select: only shown to players with delegations (e.g.
+ * staff who answer Special Chat), switching whose conversations are shown and
+ * who messages are sent as.
+ */
+function ChatAsPicker() {
+  const c = useTheme();
+  const styles = useStyles();
+  const account = useAccount();
+  const social = useSocial();
+  const name = usePlayerNames(social.delegations as string[]);
+  const current = social.actAs ? name(social.actAs) : account.username;
+  const pick = () =>
+    alert('Chat as', undefined, [
+      { text: `${account.username} (you)`, onPress: () => social.chatAs(null) },
+      ...social.delegations.map((owner) => ({ text: name(owner), onPress: () => social.chatAs(owner) })),
+      { text: 'Cancel', style: 'cancel' as const },
+    ]);
+  return (
+    <Pressable
+      onPress={pick}
+      accessibilityRole="button"
+      accessibilityLabel={`Chat as ${current}. Change`}
+      android_ripple={ripple(c.onSurface)}
+      style={({ pressed }) => [
+        styles.chatAs,
+        social.actAs && { backgroundColor: c.secondaryContainer },
+        pressed && Platform.OS !== 'android' && { opacity: 0.7 },
+      ]}
+    >
+      <Avatar uuid={social.selfId} size={28} />
+      <Text style={styles.chatAsLabel}>Chat as</Text>
+      <Text numberOfLines={1} style={styles.chatAsName}>
+        {current}
+      </Text>
+      <Ionicons name="chevron-down" size={18} color={c.onSurfaceVariant} />
+    </Pressable>
   );
 }
 
@@ -219,6 +265,20 @@ const useStyles = makeStyles((c) => ({
     minHeight: 48,
   },
   sectionTitle: { color: c.primary, ...type.titleSmall },
+  chatAs: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    marginHorizontal: spacing.md,
+    marginTop: spacing.sm,
+    paddingHorizontal: spacing.md,
+    minHeight: 48,
+    borderRadius: radius.lg,
+    backgroundColor: c.surfaceContainerHigh,
+    overflow: 'hidden',
+  },
+  chatAsLabel: { color: c.onSurfaceVariant, ...type.labelLarge },
+  chatAsName: { color: c.onSurface, ...type.titleSmall, flex: 1, textAlign: 'right' },
   sectionCount: { color: c.onSurfaceVariant, ...type.labelMedium },
   // M3 FAB: 56dp, large-ish corner, primary container.
   fab: {

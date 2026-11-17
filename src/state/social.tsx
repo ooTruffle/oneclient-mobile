@@ -30,6 +30,7 @@ import type {
 import { AccountChangedError, errorMessage } from '@/lib/http';
 import { setActiveChat } from '@/notifications';
 import { useAuth } from './auth';
+import { chatIdentity, useChatIdentity } from './chatIdentity';
 import { outbox } from './outbox';
 import { clearNames, rememberName, requestNames } from './players';
 
@@ -61,6 +62,15 @@ interface SocialState {
 }
 
 interface SocialContextValue extends SocialState {
+  /** Delegated owner chats are shown and sent as ("Chat as"), or null for yourself. */
+  actAs: string | null;
+  /** Players this account may chat as; empty for almost everyone. */
+  delegations: readonly string[];
+  /** Your uuid, or the owner's while chatting as them: who "you" are in the chat views. */
+  selfId: string;
+  /** Switch "Chat as" (null for yourself). Reloads the chat list. */
+  chatAs: (owner: string | null) => void;
+  refreshDelegations: () => Promise<void>;
   refreshParty: () => Promise<void>;
   setParty: (party: Party | null) => void;
   dismissPartyNotice: () => void;
@@ -162,7 +172,11 @@ export function SocialProvider({ children }: { children: ReactNode }) {
   const { account } = useAuth();
   const [state, setState] = useState<SocialState>(initialState);
   const activeGroupRef = useRef<number | null>(null);
-  const me = account?.id.toLowerCase() ?? null;
+  const identity = useChatIdentity();
+  const me = (identity.actAs ?? account?.id)?.toLowerCase() ?? null;
+  // Read by the packet handler, so switching "Chat as" doesn't reconnect the socket.
+  const meRef = useRef(me);
+  meRef.current = me;
 
   const patch = useCallback((update: Partial<SocialState> | ((s: SocialState) => Partial<SocialState>)) => {
     setState((s) => ({ ...s, ...(typeof update === 'function' ? update(s) : update) }));
@@ -236,6 +250,18 @@ export function SocialProvider({ children }: { children: ReactNode }) {
     }
   }, [patch, fail]);
 
+  // PolyPlus `ChatIdentity.refreshDelegations`: who this account may chat as.
+  const refreshDelegations = useCallback(async () => {
+    try {
+      const owners = await plus.delegations();
+      requestNames(owners);
+      chatIdentity.setDelegations(owners);
+    } catch (err) {
+      // Optional feature; the chats still work as yourself.
+      if (!(err instanceof AccountChangedError)) console.warn('[social] delegations failed', err);
+    }
+  }, []);
+
   const refreshParty = useCallback(async () => {
     try {
       const [party, partyIncoming, partyOutgoing, worldInvites] = await Promise.all([
@@ -308,7 +334,7 @@ export function SocialProvider({ children }: { children: ReactNode }) {
           void refreshRoster();
           break;
         case 'GroupMessageReceived': {
-          const fromMe = packet.sender.toLowerCase() === me;
+          const fromMe = packet.sender.toLowerCase() === meRef.current;
           const known = groupsRef.current.some((g) => g.id === packet.group_id);
           if (packet.idempotency_key) outbox.confirm(packet.idempotency_key);
           const last = {
@@ -384,7 +410,7 @@ export function SocialProvider({ children }: { children: ReactNode }) {
           break;
       }
     },
-    [me, patch, refreshGroups, refreshRoster],
+    [patch, refreshGroups, refreshRoster],
   );
 
   // Connect while signed in; pause in the background to save battery.
@@ -395,6 +421,7 @@ export function SocialProvider({ children }: { children: ReactNode }) {
       shownAccount.current = account?.id ?? null;
       plusSocket.stop();
       outbox.clear();
+      chatIdentity.reset();
       clearNames();
       activeGroupRef.current = null;
       setActiveChat(null);
@@ -408,6 +435,7 @@ export function SocialProvider({ children }: { children: ReactNode }) {
       void refreshRoster();
       void refreshGroups();
       void refreshParty();
+      void refreshDelegations();
     };
     const offPacket = plusSocket.onPacket(handlePacket);
     const offStatus = plusSocket.onStatus((connected) => {
@@ -446,7 +474,18 @@ export function SocialProvider({ children }: { children: ReactNode }) {
       appState.remove();
       plusSocket.stop();
     };
-  }, [account, handlePacket, patch, refreshGroups, refreshRoster, refreshParty, refreshRequestCounts]);
+  }, [account, handlePacket, patch, refreshGroups, refreshRoster, refreshParty, refreshRequestCounts, refreshDelegations]);
+
+  // Switching "Chat as" shows the other identity's conversations (PolyPlus resets its groups too).
+  const shownIdentity = useRef(identity.actAs);
+  useEffect(() => {
+    if (shownIdentity.current === identity.actAs) return;
+    shownIdentity.current = identity.actAs;
+    activeGroupRef.current = null;
+    setActiveChat(null);
+    patch({ groups: [], groupsCursor: null, activeGroupId: null });
+    if (account) void refreshGroups();
+  }, [identity.actAs, account, patch, refreshGroups]);
 
   // Watch presence of friends and DM partners.
   useEffect(() => {
@@ -454,12 +493,18 @@ export function SocialProvider({ children }: { children: ReactNode }) {
     for (const g of state.groups) if (g.kind === 'dm') for (const m of g.members) watched.add(m);
     for (const m of state.party?.members ?? []) watched.add(m.player);
     if (me) watched.delete(me);
+    if (account) watched.delete(account.id.toLowerCase());
     plusSocket.setWatched([...watched]);
-  }, [state.friends, state.groups, state.party, me]);
+  }, [state.friends, state.groups, state.party, me, account]);
 
   const value = useMemo<SocialContextValue>(
     () => ({
       ...state,
+      actAs: identity.actAs,
+      delegations: identity.delegations,
+      selfId: identity.actAs ?? account?.id ?? '',
+      chatAs: (owner) => chatIdentity.switchTo(owner),
+      refreshDelegations,
       refreshParty,
       setParty: (party) => {
         if (party) requestNames(party.members.map((m) => m.player));
@@ -493,7 +538,7 @@ export function SocialProvider({ children }: { children: ReactNode }) {
       stateOf: (player) =>
         state.party?.members.find((m) => m.player.toLowerCase() === player.toLowerCase())?.state ?? undefined,
     }),
-    [state, refreshParty, refreshRoster, refreshGroups, loadMoreGroups, patch],
+    [state, identity, account, refreshDelegations, refreshParty, refreshRoster, refreshGroups, loadMoreGroups, patch],
   );
 
   return <SocialContext.Provider value={value}>{children}</SocialContext.Provider>;
