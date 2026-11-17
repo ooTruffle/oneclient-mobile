@@ -31,7 +31,10 @@ export function Avatar({ uuid, size = 40, online }: { uuid: string; size?: numbe
   const dot = Math.max(10, size * 0.28);
   const texture = useSkinTexture(uuid);
   // Wait for Mojang's answer (usually a moment) rather than flashing a maybe-stale head.
-  const sources = texture === undefined ? [] : avatarUrls(uuid, size * 2, texture);
+  // Always one of two image sizes, scaled to fit: mc-heads.net caches each size
+  // separately and has served a stale Steve for one size of a skin while the
+  // others were right, so asking for every avatar size multiplied the chances.
+  const sources = texture === undefined ? [] : avatarUrls(uuid, size <= 64 ? 128 : 256, texture);
   const [attempt, setAttempt] = useState(0);
   useEffect(() => setAttempt(0), [texture]);
   return (
