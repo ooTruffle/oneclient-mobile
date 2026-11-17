@@ -59,6 +59,14 @@ interface SocialState {
   worldInvites: WorldInvite[];
   /** One-off message such as "You were removed from the party". */
   partyNotice: string | null;
+  /**
+   * Whoever you're chatting as is a Special Chat target (staff), so every
+   * player's Special Chat shows up here. From GET /special-chat, like PolyPlus.
+   */
+  specialTarget: boolean;
+  /** Special Chats where the player has sent something (PolyPlus `SpecialChatResponses`). */
+  responded: number[];
+  scanningReplies: boolean;
 }
 
 interface SocialContextValue extends SocialState {
@@ -71,11 +79,16 @@ interface SocialContextValue extends SocialState {
   /** Switch "Chat as" (null for yourself). Reloads the chat list. */
   chatAs: (owner: string | null) => void;
   refreshDelegations: () => Promise<void>;
+  /** Works out which Special Chats the player has replied in, for the Awaiting/Responded filter. */
+  scanReplies: () => Promise<void>;
+  /** Special Chat targets: turn a Special Chat into an ordinary group (PolyPlus "Convert to Normal Chat"). */
+  claimSpecialChat: (groupId: number) => Promise<void>;
   refreshParty: () => Promise<void>;
   setParty: (party: Party | null) => void;
   dismissPartyNotice: () => void;
   refreshRoster: () => Promise<void>;
-  refreshGroups: () => Promise<void>;
+  /** Resolves to the first page, or null if it failed. */
+  refreshGroups: () => Promise<GroupSummary[] | null>;
   loadMoreGroups: () => Promise<void>;
   setActiveGroup: (id: number | null) => void;
   markGroupRead: (id: number) => void;
@@ -109,7 +122,14 @@ const initialState: SocialState = {
   partyOutgoing: [],
   worldInvites: [],
   partyNotice: null,
+  specialTarget: false,
+  responded: [],
+  scanningReplies: false,
 };
+
+/** PolyPlus scans this many recent messages per Special Chat, 16 chats at a time. */
+const REPLY_SCAN_MESSAGES = 200;
+const REPLY_SCAN_CONCURRENCY = 16;
 
 const PARTY_LEFT_NOTICE: Record<string, string> = {
   kicked: 'You were removed from the party.',
@@ -243,8 +263,10 @@ export function SocialProvider({ children }: { children: ReactNode }) {
       const page = await plus.groupsPage();
       requestNames(page.items.flatMap((g) => g.members));
       patch({ groups: sortGroups(page.items), groupsCursor: page.cursor ?? null, error: null });
+      return page.items;
     } catch (err) {
       fail(err);
+      return null;
     } finally {
       patch((s) => ({ loading: { ...s.loading, groups: false } }));
     }
@@ -261,6 +283,65 @@ export function SocialProvider({ children }: { children: ReactNode }) {
       if (!(err instanceof AccountChangedError)) console.warn('[social] delegations failed', err);
     }
   }, []);
+
+  // PolyPlus `SpecialChatRepository.refreshTargets`. Like PolyPlus, this also
+  // creates the player's own Special Chat group the first time it's called.
+  const refreshSpecialStatus = useCallback(async () => {
+    try {
+      const status = await plus.specialChat();
+      patch({ specialTarget: status.is_special_chat_target });
+    } catch {
+      // Only changes how Special Chats are listed.
+    }
+  }, [patch]);
+
+  // PolyPlus `SpecialChatResponses.refresh`.
+  const scannedReplies = useRef(new Set<number>());
+  const replyScanRunning = useRef(false);
+  const scanReplies = useCallback(async () => {
+    const specials = groupsRef.current.filter((g) => g.special);
+    const self = (chatIdentity.actAs ?? account?.id ?? '').toLowerCase();
+    // The targets are whoever is in every Special Chat (with only one, just us).
+    const memberSets = specials.map((g) => new Set(g.members.map((m) => m.toLowerCase())));
+    const targets =
+      memberSets.length < 2
+        ? new Set([self])
+        : memberSets.reduce((common, members) => new Set([...common].filter((m) => members.has(m))));
+    const isPlayer = (sender: string) => !targets.has(sender.toLowerCase());
+    const addResponded = (ids: number[]) =>
+      ids.length && patch((s) => ({ responded: [...new Set([...s.responded, ...ids])] }));
+
+    addResponded(specials.filter((g) => g.last_message && isPlayer(g.last_message.sender)).map((g) => g.id));
+    if (replyScanRunning.current) return;
+    const pending = specials.map((g) => g.id).filter((id) => !scannedReplies.current.has(id));
+    if (!pending.length) return;
+
+    replyScanRunning.current = true;
+    patch({ scanningReplies: true });
+    try {
+      for (let i = 0; i < pending.length; i += REPLY_SCAN_CONCURRENCY) {
+        const batch = await Promise.all(
+          pending.slice(i, i + REPLY_SCAN_CONCURRENCY).map((id) =>
+            plus
+              .messages(id, undefined, REPLY_SCAN_MESSAGES)
+              .then((messages) => ({ id, messages }))
+              // Includes switching identity mid-scan: those answers are dropped.
+              .catch(() => ({ id, messages: null })),
+          ),
+        );
+        const replied: number[] = [];
+        for (const { id, messages } of batch) {
+          if (!messages) continue;
+          scannedReplies.current.add(id);
+          if (messages.some((m) => isPlayer(m.sender))) replied.push(id);
+        }
+        addResponded(replied);
+      }
+    } finally {
+      replyScanRunning.current = false;
+      patch({ scanningReplies: false });
+    }
+  }, [account, patch]);
 
   const refreshParty = useCallback(async () => {
     try {
@@ -292,6 +373,12 @@ export function SocialProvider({ children }: { children: ReactNode }) {
   cursorRef.current = state.groupsCursor;
   const groupsRef = useRef<GroupSummary[]>([]);
   groupsRef.current = state.groups;
+  // A delegate's socket also gets the live events of the chats it can act in,
+  // whichever identity is shown, and packets don't say which one they're for.
+  // Groups a reload showed aren't ours (right now) are skipped, so they don't
+  // reload the list on every message. Cleared when the identity changes.
+  const otherIdentityGroups = useRef(new Set<number>());
+  const checkingGroups = useRef(new Set<number>());
   const loadMoreGroups = useCallback(async () => {
     const cursor = cursorRef.current;
     if (!cursor) return;
@@ -351,7 +438,17 @@ export function SocialProvider({ children }: { children: ReactNode }) {
             ),
           }));
           // First message in a conversation we haven't seen yet.
-          if (!known) void refreshGroups();
+          const id = packet.group_id;
+          if (!known && !otherIdentityGroups.current.has(id) && !checkingGroups.current.has(id)) {
+            checkingGroups.current.add(id);
+            void refreshGroups().then((items) => {
+              checkingGroups.current.delete(id);
+              // Still missing after a reload: it belongs to the identity we're not showing.
+              if (items && chatIdentity.delegations.length > 0 && !items.some((g) => g.id === id)) {
+                otherIdentityGroups.current.add(id);
+              }
+            });
+          }
           break;
         }
         case 'GroupRenamed':
@@ -422,6 +519,8 @@ export function SocialProvider({ children }: { children: ReactNode }) {
       plusSocket.stop();
       outbox.clear();
       chatIdentity.reset();
+      otherIdentityGroups.current.clear();
+      scannedReplies.current.clear();
       clearNames();
       activeGroupRef.current = null;
       setActiveChat(null);
@@ -436,6 +535,7 @@ export function SocialProvider({ children }: { children: ReactNode }) {
       void refreshGroups();
       void refreshParty();
       void refreshDelegations();
+      void refreshSpecialStatus();
     };
     const offPacket = plusSocket.onPacket(handlePacket);
     const offStatus = plusSocket.onStatus((connected) => {
@@ -474,18 +574,23 @@ export function SocialProvider({ children }: { children: ReactNode }) {
       appState.remove();
       plusSocket.stop();
     };
-  }, [account, handlePacket, patch, refreshGroups, refreshRoster, refreshParty, refreshRequestCounts, refreshDelegations]);
+  }, [account, handlePacket, patch, refreshGroups, refreshRoster, refreshParty, refreshRequestCounts, refreshDelegations, refreshSpecialStatus]);
 
   // Switching "Chat as" shows the other identity's conversations (PolyPlus resets its groups too).
   const shownIdentity = useRef(identity.actAs);
   useEffect(() => {
     if (shownIdentity.current === identity.actAs) return;
     shownIdentity.current = identity.actAs;
+    otherIdentityGroups.current.clear();
+    scannedReplies.current.clear();
     activeGroupRef.current = null;
     setActiveChat(null);
-    patch({ groups: [], groupsCursor: null, activeGroupId: null });
-    if (account) void refreshGroups();
-  }, [identity.actAs, account, patch, refreshGroups]);
+    patch({ groups: [], groupsCursor: null, activeGroupId: null, specialTarget: false, responded: [] });
+    if (account) {
+      void refreshGroups();
+      void refreshSpecialStatus();
+    }
+  }, [identity.actAs, account, patch, refreshGroups, refreshSpecialStatus]);
 
   // Watch presence of friends and DM partners.
   useEffect(() => {
@@ -505,6 +610,13 @@ export function SocialProvider({ children }: { children: ReactNode }) {
       selfId: identity.actAs ?? account?.id ?? '',
       chatAs: (owner) => chatIdentity.switchTo(owner),
       refreshDelegations,
+      scanReplies,
+      claimSpecialChat: async (groupId) => {
+        const group = await plus.claimSpecialChat(groupId);
+        requestNames(group.members);
+        patch((s) => ({ groups: sortGroups(s.groups.map((g) => (g.id === group.id ? group : g))) }));
+        void refreshSpecialStatus();
+      },
       refreshParty,
       setParty: (party) => {
         if (party) requestNames(party.members.map((m) => m.player));
@@ -538,7 +650,7 @@ export function SocialProvider({ children }: { children: ReactNode }) {
       stateOf: (player) =>
         state.party?.members.find((m) => m.player.toLowerCase() === player.toLowerCase())?.state ?? undefined,
     }),
-    [state, identity, account, refreshDelegations, refreshParty, refreshRoster, refreshGroups, loadMoreGroups, patch],
+    [state, identity, account, refreshDelegations, scanReplies, refreshSpecialStatus, refreshParty, refreshRoster, refreshGroups, loadMoreGroups, patch],
   );
 
   return <SocialContext.Provider value={value}>{children}</SocialContext.Provider>;

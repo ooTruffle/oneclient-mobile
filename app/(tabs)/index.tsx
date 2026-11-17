@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { Platform, Pressable, RefreshControl, SectionList, Text, View } from 'react-native';
 import type { GroupSummary } from '@/api/types';
 import { alert } from '@/lib/dialog';
@@ -14,7 +14,15 @@ import { useSocial } from '@/state/social';
 import { Avatar, Badge, EmptyState, ErrorBanner, GroupAvatar, ripple, Row } from '@/ui/components';
 import { makeStyles, radius, spacing, type, useTheme } from '@/ui/theme';
 
-type SectionKey = 'pinned' | 'dm' | 'group' | 'party' | 'all';
+type SectionKey = 'pinned' | 'dm' | 'group' | 'party' | 'all' | 'special';
+
+/** PolyPlus's reply filter for Special Chat targets: has the player sent anything yet? */
+type ReplyFilter = 'all' | 'awaiting' | 'responded';
+const REPLY_FILTERS: { key: ReplyFilter; label: string }[] = [
+  { key: 'all', label: 'All' },
+  { key: 'awaiting', label: 'Awaiting' },
+  { key: 'responded', label: 'Responded' },
+];
 
 interface ChatSection {
   key: SectionKey;
@@ -45,6 +53,11 @@ export default function ChatsScreen() {
   const pins = usePins(account.id);
   const [bySection] = usePref(PREFS.chatSections, true);
   const [collapsed, setCollapsed] = usePref<SectionKey[]>(PREFS.collapsedSections, NONE_COLLAPSED);
+  const [replyFilter, setReplyFilter] = useState<ReplyFilter>('all');
+  const chooseReplyFilter = (filter: ReplyFilter) => {
+    setReplyFilter(filter);
+    if (filter !== 'all') void social.scanReplies();
+  };
 
   const preview = (g: GroupSummary) => {
     const last = g.last_message;
@@ -53,27 +66,39 @@ export default function ChatsScreen() {
     const body = last.content ? renderEmoji(last.content) : 'World invite';
     // Special Chat members are just you and staff, so a last message from you means it's their turn.
     // (Answering as staff it's the other way round; the server says which.)
-    if (g.special && social.actAs) return g.awaiting_reply ? `Awaiting your reply · ${body}` : `${who}: ${body}`;
+    if (g.special && social.specialTarget) return g.awaiting_reply ? `Awaiting your reply · ${body}` : `${who}: ${body}`;
     if (g.special && who === 'You') return `Waiting for a reply · ${body}`;
     return g.kind === 'dm' && who !== 'You' ? body : `${who}: ${body}`;
   };
 
   // Each section keeps the store's newest-activity order.
   const sections = useMemo<ChatSection[]>(() => {
-    const pinned = social.groups.filter((g) => pins.pinned.has(g.id));
-    const rest = social.groups.filter((g) => !pins.pinned.has(g.id));
+    // Special Chat targets see every player's Special Chat, so (like PolyPlus)
+    // those get a section of their own instead of filling up Groups.
+    const apart = (g: GroupSummary) => social.specialTarget && !!g.special;
+    const responded = new Set(social.responded);
+    const specials = social.groups.filter(apart);
+    const shownSpecials =
+      replyFilter === 'all' ? specials : specials.filter((g) => responded.has(g.id) === (replyFilter === 'responded'));
+    const special: ChatSection[] = specials.length
+      ? [{ key: 'special', title: 'Special Chat', all: specials, data: collapsed.includes('special') ? [] : shownSpecials }]
+      : [];
+    const mine = social.groups.filter((g) => !apart(g));
+    const pinned = mine.filter((g) => pins.pinned.has(g.id));
+    const rest = mine.filter((g) => !pins.pinned.has(g.id));
     const make = (key: SectionKey, title: string, all: GroupSummary[]): ChatSection => ({
       key,
       title,
       all,
       data: bySection && collapsed.includes(key) ? [] : all,
     });
-    if (!bySection) return [make('all', '', [...pinned, ...rest])];
+    if (!bySection) return [make('all', '', [...pinned, ...rest]), ...special];
     return [
       make('pinned', 'Pinned', pinned),
       ...TYPE_SECTIONS.map((s) => make(s.key, s.title, rest.filter((g) => g.kind === s.key))),
+      ...special,
     ].filter((s) => s.all.length > 0);
-  }, [social.groups, pins.pinned, bySection, collapsed]);
+  }, [social.groups, social.specialTarget, social.responded, replyFilter, pins.pinned, bySection, collapsed]);
 
   const toggleSection = (key: SectionKey) =>
     setCollapsed(collapsed.includes(key) ? collapsed.filter((k) => k !== key) : [...collapsed, key]);
@@ -118,13 +143,38 @@ export default function ChatsScreen() {
         }
         renderSectionHeader={({ section }) =>
           section.key === 'all' ? null : (
-            <SectionToggle
-              title={section.title}
-              count={section.all.length}
-              unread={section.all.filter((g) => g.unread).length}
-              open={!collapsed.includes(section.key)}
-              onPress={() => toggleSection(section.key)}
-            />
+            <View>
+              <SectionToggle
+                title={section.title}
+                count={section.all.length}
+                unread={section.all.filter((g) => g.unread).length}
+                open={!collapsed.includes(section.key)}
+                onPress={() => toggleSection(section.key)}
+              />
+              {section.key === 'special' && !collapsed.includes('special') && (
+                <View style={styles.replyFilters}>
+                  {REPLY_FILTERS.map((f) => {
+                    const selected = f.key === replyFilter;
+                    return (
+                      <Pressable
+                        key={f.key}
+                        onPress={() => chooseReplyFilter(f.key)}
+                        accessibilityRole="button"
+                        accessibilityState={{ selected }}
+                        android_ripple={ripple(c.onSurface)}
+                        style={[styles.replyChip, selected && styles.replyChipSelected]}
+                      >
+                        <Text style={[styles.replyChipText, selected && styles.replyChipTextSelected]}>{f.label}</Text>
+                      </Pressable>
+                    );
+                  })}
+                  {social.scanningReplies && <Text style={styles.replyNote}>Checking replies…</Text>}
+                  {!social.scanningReplies && section.data.length === 0 && replyFilter !== 'all' && (
+                    <Text style={styles.replyNote}>None</Text>
+                  )}
+                </View>
+              )}
+            </View>
           )
         }
         renderItem={({ item }) => {
@@ -277,6 +327,27 @@ const useStyles = makeStyles((c) => ({
     backgroundColor: c.surfaceContainerHigh,
     overflow: 'hidden',
   },
+  replyFilters: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+    paddingHorizontal: spacing.lg,
+    paddingBottom: spacing.sm,
+  },
+  replyChip: {
+    paddingHorizontal: spacing.md,
+    minHeight: 32,
+    justifyContent: 'center',
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: c.outlineVariant,
+    overflow: 'hidden',
+  },
+  replyChipSelected: { backgroundColor: c.secondaryContainer, borderColor: c.secondaryContainer },
+  replyChipText: { color: c.onSurfaceVariant, ...type.labelLarge },
+  replyChipTextSelected: { color: c.onSecondaryContainer },
+  replyNote: { color: c.onSurfaceVariant, ...type.labelMedium },
   chatAsLabel: { color: c.onSurfaceVariant, ...type.labelLarge },
   chatAsName: { color: c.onSurface, ...type.titleSmall, flex: 1, textAlign: 'right' },
   sectionCount: { color: c.onSurfaceVariant, ...type.labelMedium },

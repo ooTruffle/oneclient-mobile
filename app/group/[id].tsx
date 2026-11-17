@@ -46,6 +46,17 @@ export default function GroupInfoScreen() {
     }
   };
 
+  // PolyPlus "Convert to Normal Chat", for Special Chat targets (and their delegates).
+  const convert = () =>
+    alert(
+      'Convert to a normal chat?',
+      'It becomes an ordinary group chat owned by the Special Chat account. The player gets a new Special Chat the next time they open it.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Convert', onPress: () => void run('convert', () => social.claimSpecialChat(groupId)) },
+      ],
+    );
+
   const rename = () =>
     run('rename', () => plus.renameGroup(groupId, title.trim()), () =>
       social.upsertGroup({ ...group, name: title.trim() }),
@@ -75,11 +86,23 @@ export default function GroupInfoScreen() {
     <ScrollView style={{ backgroundColor: c.surface }} contentContainerStyle={{ paddingBottom: spacing.xl * 2 }}>
       {error && <ErrorBanner message={error} />}
 
-      {group.special && !social.actAs && (
+      {group.special && !social.specialTarget && (
         <Text style={{ color: c.onSurfaceVariant, ...type.bodyMedium, padding: spacing.lg, paddingBottom: 0 }}>
           Special Chat goes straight to Polyfrost. You can send one message every 3 days, and its members can't be
           changed.
         </Text>
+      )}
+
+      {group.special && social.specialTarget && (
+        <View style={{ padding: spacing.lg, paddingBottom: 0 }}>
+          <Button
+            title="Convert to normal chat"
+            icon="checkmark-circle-outline"
+            variant="secondary"
+            onPress={convert}
+            loading={busy === 'convert'}
+          />
+        </View>
       )}
 
       {editable && (

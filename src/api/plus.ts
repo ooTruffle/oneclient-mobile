@@ -145,6 +145,8 @@ export const plus = {
     request<void>('DELETE', `/groups/${groupId}/messages/${messageId}`, asSelected()),
   markRead: (groupId: number, messageId: number) =>
     request<void>('POST', `/groups/${groupId}/read/${messageId}`, asSelected()),
+  /** Special Chat target accounts (or their delegates) only: turn a Special Chat into an ordinary group. */
+  claimSpecialChat: (groupId: number) => request<GroupSummary>('POST', `/groups/${groupId}/claim`, asSelected()),
   /** Special Chat cooldown. The cooldown is per player, shared by every Special Chat group. */
   specialChat: () => request<SpecialChatStatus>('GET', '/special-chat', asCurrent()),
 
