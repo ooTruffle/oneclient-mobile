@@ -1,0 +1,22 @@
+diff --git a/node_modules/react-native-screens/ios/RNSScreenStack.mm b/node_modules/react-native-screens/ios/RNSScreenStack.mm
+index 229dc58..0371b03 100644
+--- a/node_modules/react-native-screens/ios/RNSScreenStack.mm
++++ b/node_modules/react-native-screens/ios/RNSScreenStack.mm
+@@ -230,13 +230,10 @@ - (BOOL)navigationBar:(UINavigationBar *)navigationBar shouldPopItem:(UINavigati
+     // which we check indirectly by checking if transitionCoordinator is set.
+     // If it's not, we are safe to proceed.
+     if (self.transitionCoordinator == nil) {
+-      // We still need to disable interactions for back button so click effects are not applied,
+-      // and there is unfortunately no better place for it currently
+-      UIView *button = [navigationBar rnscreens_findBackButtonWrapperView];
+-      if (button != nil) {
+-        button.userInteractionEnabled = false;
+-      }
+-
++      // Patched: don't disable the back button here. On iOS 27 UIKit reuses the
++      // back button view for the next pushed screen, but didPopItem can't find it
++      // to re-enable it (the root screen has no back button), so every later back
++      // button ignored taps. Upstream (4.30) removed this disabling entirely.
+       return true;
+     }
+ 

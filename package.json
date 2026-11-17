@@ -10,7 +10,8 @@
     "web": "node scripts/web-dev.mjs",
     "typecheck": "tsc --noEmit",
     "doctor": "npx expo-doctor",
-    "build:apk": "powershell -ExecutionPolicy Bypass -File scripts/build-android-local.ps1"
+    "build:apk": "powershell -ExecutionPolicy Bypass -File scripts/build-android-local.ps1",
+    "postinstall": "patch-package"
   },
   "dependencies": {
     "@expo/metro-runtime": "~6.1.2",
@@ -41,6 +42,7 @@
   },
   "devDependencies": {
     "@types/react": "~19.1.10",
+    "patch-package": "^8.0.1",
     "typescript": "~5.9.2"
   }
 }
