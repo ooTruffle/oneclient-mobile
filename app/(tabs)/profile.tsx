@@ -35,6 +35,7 @@ export default function ProfileScreen() {
   const social = useSocial();
   const [savingStatus, setSavingStatus] = useState(false);
   const [chatSections, setChatSections] = usePref(PREFS.chatSections, true);
+  const [specialFeatures, setSpecialFeatures] = usePref(PREFS.specialFeatures, true);
 
   const appearOffline = social.myStatus === 'offline';
 
@@ -161,6 +162,17 @@ export default function ProfileScreen() {
 <Toggle value={chatSections} onValueChange={setChatSections} />
           }
         />
+        {/* Only for Special Chat staff (targets and their delegates). */}
+        {social.hasSpecialFeatures && (
+          <Row
+            title="Special Chat tools"
+            subtitle={
+              'Chat as, the Special Chat section and its filters, and Convert to normal chat. ' +
+              'Turn off to see the app the way everyone else does. Saved on this device.'
+            }
+            right={<Toggle value={specialFeatures} onValueChange={setSpecialFeatures} />}
+          />
+        )}
       </Card>
 
       <SectionHeader title="Connection" />

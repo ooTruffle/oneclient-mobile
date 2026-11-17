@@ -31,6 +31,7 @@ import { AccountChangedError, errorMessage } from '@/lib/http';
 import { setActiveChat } from '@/notifications';
 import { useAuth } from './auth';
 import { chatIdentity, useChatIdentity } from './chatIdentity';
+import { PREFS, usePref } from './prefs';
 import { outbox } from './outbox';
 import { clearNames, rememberName, requestNames } from './players';
 
@@ -79,6 +80,13 @@ interface SocialContextValue extends SocialState {
   /** Switch "Chat as" (null for yourself). Reloads the chat list. */
   chatAs: (owner: string | null) => void;
   refreshDelegations: () => Promise<void>;
+  /**
+   * This account has Special Chat staff tools to show (delegations, or it is a
+   * target itself), whether or not they're switched on.
+   */
+  hasSpecialFeatures: boolean;
+  /** The staff tools are switched on (Profile > Chats). Off hides them all. */
+  specialFeatures: boolean;
   /** Works out which Special Chats the player has replied in, for the Awaiting/Responded filter. */
   scanReplies: () => Promise<void>;
   /** Special Chat targets: turn a Special Chat into an ordinary group (PolyPlus "Convert to Normal Chat"). */
@@ -193,6 +201,11 @@ export function SocialProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<SocialState>(initialState);
   const activeGroupRef = useRef<number | null>(null);
   const identity = useChatIdentity();
+  const [specialFeatures] = usePref(PREFS.specialFeatures, true);
+  // Switched off: back to yourself, like any other player.
+  useEffect(() => {
+    if (!specialFeatures) chatIdentity.switchTo(null);
+  }, [specialFeatures]);
   const me = (identity.actAs ?? account?.id)?.toLowerCase() ?? null;
   // Read by the packet handler, so switching "Chat as" doesn't reconnect the socket.
   const meRef = useRef(me);
@@ -605,9 +618,13 @@ export function SocialProvider({ children }: { children: ReactNode }) {
   const value = useMemo<SocialContextValue>(
     () => ({
       ...state,
-      actAs: identity.actAs,
-      delegations: identity.delegations,
-      selfId: identity.actAs ?? account?.id ?? '',
+      // With the staff tools off, nothing below shows them.
+      specialTarget: specialFeatures && state.specialTarget,
+      hasSpecialFeatures: identity.delegations.length > 0 || state.specialTarget,
+      specialFeatures,
+      actAs: specialFeatures ? identity.actAs : null,
+      delegations: specialFeatures ? identity.delegations : [],
+      selfId: (specialFeatures ? identity.actAs : null) ?? account?.id ?? '',
       chatAs: (owner) => chatIdentity.switchTo(owner),
       refreshDelegations,
       scanReplies,
@@ -650,7 +667,7 @@ export function SocialProvider({ children }: { children: ReactNode }) {
       stateOf: (player) =>
         state.party?.members.find((m) => m.player.toLowerCase() === player.toLowerCase())?.state ?? undefined,
     }),
-    [state, identity, account, refreshDelegations, scanReplies, refreshSpecialStatus, refreshParty, refreshRoster, refreshGroups, loadMoreGroups, patch],
+    [state, identity, specialFeatures, account, refreshDelegations, scanReplies, refreshSpecialStatus, refreshParty, refreshRoster, refreshGroups, loadMoreGroups, patch],
   );
 
   return <SocialContext.Provider value={value}>{children}</SocialContext.Provider>;

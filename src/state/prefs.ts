@@ -64,6 +64,13 @@ export const PREFS = {
   chatSections: 'chats.sections',
   /** Which of those sections are collapsed. */
   collapsedSections: 'chats.collapsed',
+  /** Special Chat section (targets only): unread chats first, newest first within each half. */
+  specialUnreadFirst: 'chats.specialUnreadFirst',
+  /**
+   * Special Chat staff tools: "Chat as", the separate Special Chat section and
+   * its filters, Convert to normal chat. Off shows the app everyone else sees.
+   */
+  specialFeatures: 'chats.specialFeatures',
   /** Accent colour as "#rrggbb". */
   accent: 'appearance.accent',
 } as const;
