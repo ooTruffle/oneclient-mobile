@@ -1,11 +1,12 @@
 import * as Clipboard from 'expo-clipboard';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { Pressable, Text, View, type AlertButton } from 'react-native';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { Platform, Pressable, Text, View, type AlertButton, type StyleProp, type ViewStyle } from 'react-native';
+import Animated, { useAnimatedStyle } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 // React Native's own KeyboardAvoidingView doesn't move content on Android with
 // edge-to-edge (Expo's default), which left the message box under the keyboard.
-import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
+import { KeyboardAvoidingView, useReanimatedKeyboardAnimation } from 'react-native-keyboard-controller';
 import { useHeaderHeight } from '@react-navigation/elements';
 import { plus } from '@/api/plus';
 import type { GroupMessage } from '@/api/types';
@@ -26,6 +27,48 @@ const PAGE = 50;
 const MAX_CATCHUP_PAGES = 10;
 /** Backend `SPECIAL_CHAT_COOLDOWN_SECS`. */
 const SPECIAL_COOLDOWN_MS = 72 * 60 * 60 * 1000;
+
+/**
+ * Keeps the message box just above the keyboard.
+ *
+ * Android: the chat screen always reaches the bottom of the screen (no tab
+ * bar), so the space to leave is simply the keyboard's height. The library's
+ * KeyboardAvoidingView works it out from the screen's measured position plus
+ * the header offset instead, which comes out far too big with edge-to-edge
+ * and left a big gap above the keyboard. iOS keeps the KeyboardAvoidingView.
+ */
+function ChatKeyboardView({
+  style,
+  headerHeight,
+  children,
+}: {
+  style: StyleProp<ViewStyle>;
+  headerHeight: number;
+  children: ReactNode;
+}) {
+  if (Platform.OS === 'android') return <AndroidKeyboardView style={style}>{children}</AndroidKeyboardView>;
+  return (
+    <KeyboardAvoidingView style={style} behavior="padding" keyboardVerticalOffset={headerHeight}>
+      {children}
+    </KeyboardAvoidingView>
+  );
+}
+
+function AndroidKeyboardView({ style, children }: { style: StyleProp<ViewStyle>; children: ReactNode }) {
+  const keyboard = useReanimatedKeyboardAnimation();
+  const insets = useSafeAreaInsets();
+  const bottom = insets.bottom;
+  // `height` runs from 0 to minus the keyboard's height. The keyboard also
+  // covers the navigation bar, which the composer already pads for, so swap
+  // that padding for a small gap while it's open.
+  const lift = useAnimatedStyle(
+    () => ({
+      paddingBottom: Math.max(0, -keyboard.height.value + keyboard.progress.value * (spacing.sm - bottom)),
+    }),
+    [bottom],
+  );
+  return <Animated.View style={[style, lift]}>{children}</Animated.View>;
+}
 
 const confirmSpecialSend = () =>
   new Promise<boolean>((resolve) =>
@@ -336,11 +379,7 @@ export default function ChatScreen() {
   const shared = group ? group.kind !== 'dm' : true;
 
   return (
-    <KeyboardAvoidingView
-      style={{ flex: 1, backgroundColor: c.surface }}
-      behavior="padding"
-      keyboardVerticalOffset={headerHeight}
-    >
+    <ChatKeyboardView style={{ flex: 1, backgroundColor: c.surface }} headerHeight={headerHeight}>
       <Stack.Screen
         options={{
           headerTitle: () => (
@@ -410,7 +449,7 @@ export default function ChatScreen() {
           />
         </>
       )}
-    </KeyboardAvoidingView>
+    </ChatKeyboardView>
   );
 }
 

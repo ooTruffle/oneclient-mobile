@@ -64,8 +64,8 @@ export const PREFS = {
   chatSections: 'chats.sections',
   /** Which of those sections are collapsed. */
   collapsedSections: 'chats.collapsed',
-  /** Special Chat section (targets only): unread chats first, newest first within each half. */
-  specialUnreadFirst: 'chats.specialUnreadFirst',
+  /** Special Chat section (targets only): show only unread chats. */
+  specialUnreadOnly: 'chats.specialUnreadOnly',
   /**
    * Special Chat staff tools: "Chat as", the separate Special Chat section and
    * its filters, Convert to normal chat. Off shows the app everyone else sees.

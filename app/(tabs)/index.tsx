@@ -54,7 +54,7 @@ export default function ChatsScreen() {
   const [bySection] = usePref(PREFS.chatSections, true);
   const [collapsed, setCollapsed] = usePref<SectionKey[]>(PREFS.collapsedSections, NONE_COLLAPSED);
   const [replyFilter, setReplyFilter] = useState<ReplyFilter>('all');
-  const [unreadFirst, setUnreadFirst] = usePref(PREFS.specialUnreadFirst, false);
+  const [unreadOnly, setUnreadOnly] = usePref(PREFS.specialUnreadOnly, false);
   const chooseReplyFilter = (filter: ReplyFilter) => {
     setReplyFilter(filter);
     if (filter !== 'all') void social.scanReplies();
@@ -81,10 +81,7 @@ export default function ChatsScreen() {
     const specials = social.groups.filter(apart);
     const filtered =
       replyFilter === 'all' ? specials : specials.filter((g) => responded.has(g.id) === (replyFilter === 'responded'));
-    // Partitioned rather than sorted, so each half keeps the newest-activity order.
-    const shownSpecials = unreadFirst
-      ? [...filtered.filter((g) => g.unread), ...filtered.filter((g) => !g.unread)]
-      : filtered;
+    const shownSpecials = unreadOnly ? filtered.filter((g) => g.unread) : filtered;
     const special: ChatSection[] = specials.length
       ? [{ key: 'special', title: 'Special Chat', all: specials, data: collapsed.includes('special') ? [] : shownSpecials }]
       : [];
@@ -103,7 +100,7 @@ export default function ChatsScreen() {
       ...TYPE_SECTIONS.map((s) => make(s.key, s.title, rest.filter((g) => g.kind === s.key))),
       ...special,
     ].filter((s) => s.all.length > 0);
-  }, [social.groups, social.specialTarget, social.responded, replyFilter, unreadFirst, pins.pinned, bySection, collapsed]);
+  }, [social.groups, social.specialTarget, social.responded, replyFilter, unreadOnly, pins.pinned, bySection, collapsed]);
 
   const toggleSection = (key: SectionKey) =>
     setCollapsed(collapsed.includes(key) ? collapsed.filter((k) => k !== key) : [...collapsed, key]);
@@ -174,22 +171,22 @@ export default function ChatsScreen() {
                     );
                   })}
                   <Pressable
-                    onPress={() => setUnreadFirst(!unreadFirst)}
+                    onPress={() => setUnreadOnly(!unreadOnly)}
                     accessibilityRole="switch"
-                    accessibilityState={{ checked: unreadFirst }}
-                    accessibilityLabel="Sort unread first"
+                    accessibilityState={{ checked: unreadOnly }}
+                    accessibilityLabel="Show unread only"
                     android_ripple={ripple(c.onSurface)}
-                    style={[styles.replyChip, styles.sortChip, unreadFirst && styles.replyChipSelected]}
+                    style={[styles.replyChip, styles.sortChip, unreadOnly && styles.replyChipSelected]}
                   >
                     <Ionicons
-                      name={unreadFirst ? 'checkmark' : 'swap-vertical'}
+                      name={unreadOnly ? 'checkmark' : 'mail-unread-outline'}
                       size={16}
-                      color={unreadFirst ? c.onSecondaryContainer : c.onSurfaceVariant}
+                      color={unreadOnly ? c.onSecondaryContainer : c.onSurfaceVariant}
                     />
-                    <Text style={[styles.replyChipText, unreadFirst && styles.replyChipTextSelected]}>Unread first</Text>
+                    <Text style={[styles.replyChipText, unreadOnly && styles.replyChipTextSelected]}>Unread only</Text>
                   </Pressable>
                   {social.scanningReplies && <Text style={styles.replyNote}>Checking replies…</Text>}
-                  {!social.scanningReplies && section.data.length === 0 && replyFilter !== 'all' && (
+                  {!social.scanningReplies && section.data.length === 0 && (replyFilter !== 'all' || unreadOnly) && (
                     <Text style={styles.replyNote}>None</Text>
                   )}
                 </View>
