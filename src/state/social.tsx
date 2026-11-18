@@ -97,6 +97,8 @@ interface SocialContextValue extends SocialState {
   refreshRoster: () => Promise<void>;
   /** Resolves to the first page, or null if it failed. */
   refreshGroups: () => Promise<GroupSummary[] | null>;
+  /** Updates a conversation's Chats list preview after one of its messages was edited or deleted. */
+  refreshPreview: (groupId: number) => Promise<void>;
   loadMoreGroups: () => Promise<void>;
   setActiveGroup: (id: number | null) => void;
   markGroupRead: (id: number) => void;
@@ -285,6 +287,37 @@ export function SocialProvider({ children }: { children: ReactNode }) {
     }
   }, [patch, fail]);
 
+  /**
+   * Re-reads a conversation's newest message for its Chats list preview, after a
+   * message in it was edited or deleted. The preview has no message id, so we
+   * can't tell whether the changed message was the one shown.
+   */
+  const refreshPreview = useCallback(
+    async (groupId: number) => {
+      const before = groupsRef.current.find((g) => g.id === groupId);
+      if (!before) return;
+      try {
+        const [newest] = (await plus.messages(groupId, undefined, 1)).sort((a, b) => b.id - a.id);
+        patch((s) => ({
+          groups: sortGroups(
+            s.groups.map((g) =>
+              // A message that arrived meanwhile is newer than what we fetched; leave it.
+              g.id !== groupId || g.last_message !== before.last_message
+                ? g
+                : {
+                    ...g,
+                    last_message: newest ? { content: newest.content, sender: newest.sender, sent_at: newest.sent_at } : null,
+                  },
+            ),
+          ),
+        }));
+      } catch {
+        // Only the preview text; the next full refresh corrects it.
+      }
+    },
+    [patch],
+  );
+
   // PolyPlus `ChatIdentity.refreshDelegations`: who this account may chat as.
   const refreshDelegations = useCallback(async () => {
     try {
@@ -464,6 +497,10 @@ export function SocialProvider({ children }: { children: ReactNode }) {
           }
           break;
         }
+        case 'GroupMessageEdited':
+        case 'GroupMessageDeleted':
+          void refreshPreview(packet.group_id);
+          break;
         case 'GroupRenamed':
           patch((s) => ({
             groups: s.groups.map((g) => (g.id === packet.group_id ? { ...g, name: packet.name } : g)),
@@ -520,7 +557,7 @@ export function SocialProvider({ children }: { children: ReactNode }) {
           break;
       }
     },
-    [patch, refreshGroups, refreshRoster],
+    [patch, refreshGroups, refreshRoster, refreshPreview],
   );
 
   // Connect while signed in; pause in the background to save battery.
@@ -642,6 +679,7 @@ export function SocialProvider({ children }: { children: ReactNode }) {
       dismissPartyNotice: () => patch({ partyNotice: null }),
       refreshRoster,
       refreshGroups,
+      refreshPreview,
       loadMoreGroups,
       setActiveGroup: (id) => {
         activeGroupRef.current = id;
@@ -667,7 +705,7 @@ export function SocialProvider({ children }: { children: ReactNode }) {
       stateOf: (player) =>
         state.party?.members.find((m) => m.player.toLowerCase() === player.toLowerCase())?.state ?? undefined,
     }),
-    [state, identity, specialFeatures, account, refreshDelegations, scanReplies, refreshSpecialStatus, refreshParty, refreshRoster, refreshGroups, loadMoreGroups, patch],
+    [state, identity, specialFeatures, account, refreshDelegations, scanReplies, refreshSpecialStatus, refreshParty, refreshRoster, refreshGroups, refreshPreview, loadMoreGroups, patch],
   );
 
   return <SocialContext.Provider value={value}>{children}</SocialContext.Provider>;

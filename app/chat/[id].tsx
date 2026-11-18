@@ -308,6 +308,7 @@ export default function ChatScreen() {
       try {
         const updated = await plus.editMessage(groupId, editing.id, text);
         merge([toChat(updated)]);
+        void social.refreshPreview(groupId);
         setEditing(null);
         setError(null);
       } catch (err) {
@@ -362,7 +363,10 @@ export default function ChatScreen() {
           onPress: () =>
             plus
               .deleteMessage(groupId, message.id)
-              .then(() => setMessages((current) => current.filter((m) => m.id !== message.id)))
+              .then(() => {
+                setMessages((current) => current.filter((m) => m.id !== message.id));
+                void social.refreshPreview(groupId);
+              })
               .catch((err) => setError(errorMessage(err))),
         },
       );
