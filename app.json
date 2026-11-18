@@ -16,7 +16,7 @@
     },
     "android": {
       "package": "org.polyfrost.oneclient.mobile",
-      "versionCode": 13,
+      "versionCode": 19,
       "edgeToEdgeEnabled": true,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
